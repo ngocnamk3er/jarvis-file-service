@@ -25,13 +25,21 @@ def _get_client() -> Minio:
     return _client
 
 
-def put_object(object_key: str, content: bytes, content_type: str) -> None:
+def put_object(object_key: str, content: bytes, content_type: str, filename: str) -> None:
+    # Content-Disposition here is what makes a download straight from the
+    # MinIO console (or any S3 client) come out named "report.pdf" instead
+    # of the opaque object key — the object key is still {user_id}/{file_id}
+    # (see repository.py's create_file), this is purely a response-header
+    # hint the object carries alongside its bytes. minio-py maps well-known
+    # header names in `metadata` onto real HTTP headers rather than
+    # x-amz-meta-* custom ones — verified against its put_object signature.
     _get_client().put_object(
         settings.MINIO_BUCKET,
         object_key,
         BytesIO(content),
         length=len(content),
         content_type=content_type or "application/octet-stream",
+        metadata={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

@@ -138,7 +138,7 @@ async def create_file(
         node_id = str(uuid4())
         object_key = f"{user_id}/{node_id}"
         # Blocking SDK call — off the event loop (see minio_client's docstring).
-        await asyncio.to_thread(minio_client.put_object, object_key, content, mime_type)
+        await asyncio.to_thread(minio_client.put_object, object_key, content, mime_type, name)
 
         node = FileNode(
             id=node_id,
