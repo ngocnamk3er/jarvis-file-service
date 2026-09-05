@@ -1,4 +1,6 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+import asyncio
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
 
 from app.api.deps import verify_internal_key
 from app.db import repository
@@ -12,6 +14,7 @@ from app.schemas.files import (
     VectorSearchResult,
 )
 from app.services import ingest, search as search_service
+from app.storage import minio_client
 
 router = APIRouter(dependencies=[Depends(verify_internal_key)])
 
@@ -53,6 +56,24 @@ async def upload_file(
 @router.get("/nodes/{node_id}", response_model=NodeDetail | None)
 async def get_node(node_id: str, user_id: str):
     return await repository.get_node(user_id, node_id)
+
+
+@router.get("/nodes/{node_id}/content")
+async def get_node_content(node_id: str, user_id: str):
+    """Raw bytes, for preview (inline) and download in the frontend — the
+    frontend fetches this with the browser's Authorization header attached
+    and turns it into a blob URL itself; the Content-Disposition here is
+    just a filename hint, not what decides preview vs. download (that's a
+    frontend-side choice: <img>/<iframe> the blob vs. <a download>)."""
+    ref = await repository.get_content_ref(user_id, node_id)
+    if ref is None or not ref["minio_object_key"]:
+        raise HTTPException(status_code=404, detail="Not found")
+    content = await asyncio.to_thread(minio_client.get_object, ref["minio_object_key"])
+    return Response(
+        content=content,
+        media_type=ref["mime_type"] or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{ref["name"]}"'},
+    )
 
 
 @router.get("/resolve", response_model=NodeDetail | None)

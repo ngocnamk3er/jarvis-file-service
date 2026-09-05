@@ -175,6 +175,21 @@ async def get_file_for_ingest(node_id: str) -> dict | None:
         }
 
 
+async def get_content_ref(user_id: str, node_id: str) -> dict | None:
+    """Ownership-checked accessor for GET /nodes/{id}/content — unlike
+    get_file_for_ingest (internal/trusted, no user_id filter), this is
+    reached from a user-facing request, so it must verify the caller owns
+    the node before handing back the MinIO object key to read."""
+    async with get_sessionmaker()() as session:
+        result = await session.execute(
+            select(FileNode).where(FileNode.id == node_id, FileNode.user_id == user_id, FileNode.type == "file")
+        )
+        node = result.scalar_one_or_none()
+        if node is None:
+            return None
+        return {"name": node.name, "mime_type": node.mime_type, "minio_object_key": node.minio_object_key}
+
+
 async def get_display_path(node_id: str) -> str:
     """Walks parent_id up to the root, for the Qdrant payload's `path` field
     (so search_files results can cite a human-readable location)."""
