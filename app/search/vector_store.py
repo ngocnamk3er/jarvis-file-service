@@ -10,22 +10,25 @@ from qdrant_client.http import models as qm
 from app.core.config import settings
 
 _COLLECTION = "file_chunks"
-_VECTOR_SIZE = 1536  # text-embedding-3-small
+_VECTOR_SIZE = 1024  # baai/bge-m3 (see app/core/config.py EMBEDDING_MODEL)
 
 _client: QdrantClient | None = None
 
 
 def _get_client() -> QdrantClient:
+    """Returns a client with the collection guaranteed to exist. The
+    existence check runs every call (one cheap request) rather than once at
+    first init — otherwise a collection dropped out from under a
+    long-running process (Qdrant restart with lost volume, manual ops)
+    would make every subsequent upsert/search fail until a redeploy."""
     global _client
     if _client is None:
-        client = QdrantClient(url=settings.QDRANT_URL)
-        existing = [c.name for c in client.get_collections().collections]
-        if _COLLECTION not in existing:
-            client.create_collection(
-                collection_name=_COLLECTION,
-                vectors_config=qm.VectorParams(size=_VECTOR_SIZE, distance=qm.Distance.COSINE),
-            )
-        _client = client
+        _client = QdrantClient(url=settings.QDRANT_URL)
+    if not _client.collection_exists(_COLLECTION):
+        _client.create_collection(
+            collection_name=_COLLECTION,
+            vectors_config=qm.VectorParams(size=_VECTOR_SIZE, distance=qm.Distance.COSINE),
+        )
     return _client
 
 

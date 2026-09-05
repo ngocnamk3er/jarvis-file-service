@@ -1,5 +1,6 @@
-"""Sync OpenAI SDK wrapper — see ingest.py/search.py for the
-asyncio.to_thread() calls that keep these off the event loop."""
+"""Sync OpenAI SDK wrapper, pointed at any OpenAI-compatible /embeddings
+endpoint (OpenRouter by default — see config.py). ingest.py/search.py wrap
+these in asyncio.to_thread() to keep them off the event loop."""
 
 from openai import OpenAI
 
@@ -11,7 +12,7 @@ _client: OpenAI | None = None
 def _get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        _client = OpenAI(api_key=settings.EMBEDDING_API_KEY, base_url=settings.EMBEDDING_BASE_URL)
     return _client
 
 

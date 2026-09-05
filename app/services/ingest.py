@@ -5,7 +5,7 @@ embedding.
 
 1. Fetch bytes back from MinIO, extract plaintext, save it — that alone is
    enough to power grep_files.
-2. If embeddings are configured (OPENAI_API_KEY set), chunk the extracted
+2. If embeddings are configured (EMBEDDING_API_KEY set), chunk the extracted
    text, embed each chunk, and upsert into Qdrant — powers search_files.
    Left unconfigured, indexing stops at "done" after step 1: grep still
    works, semantic search just returns nothing for this file.
@@ -41,7 +41,7 @@ async def process_file(node_id: str) -> None:
 
     await repository.set_extracted_text(node_id, text)
 
-    if not settings.OPENAI_API_KEY:
+    if not settings.EMBEDDING_API_KEY:
         await repository.set_indexing_status(node_id, "done")
         return
 

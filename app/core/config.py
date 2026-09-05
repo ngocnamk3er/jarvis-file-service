@@ -19,11 +19,15 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "jarvis-files"
     MINIO_SECURE: bool = False
 
-    # Phase 3 (embeddings + search_files) — not wired up yet, see
-    # ~/.claude/plans/cosmic-drifting-pinwheel.md.
+    # Phase 3 — embeddings for search_files. Any OpenAI-compatible /embeddings
+    # endpoint works; we point at OpenRouter (one key, many providers) and use
+    # BAAI's bge-m3 for its multilingual (incl. Vietnamese) retrieval quality
+    # at $0.01/M tokens. Leave EMBEDDING_API_KEY empty to run grep-only —
+    # ingest still extracts text, search_vector just returns "not configured".
     QDRANT_URL: str = "http://localhost:6333"
-    OPENAI_API_KEY: str = ""
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = "https://openrouter.ai/api/v1"
+    EMBEDDING_MODEL: str = "baai/bge-m3"
 
     class Config:
         env_file = ".env"

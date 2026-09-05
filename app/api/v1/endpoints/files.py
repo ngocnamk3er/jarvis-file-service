@@ -109,6 +109,18 @@ async def grep_files(user_id: str, query: str, path: str = "/"):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.post("/reindex")
+async def reindex(user_id: str | None = None):
+    """Re-run the ingest pipeline (extract → embed → Qdrant) over existing
+    files — for after an embedding-model change or to recover failed rows.
+    Internal/admin only; synchronous since this deployment's file count is
+    small. Omit user_id to reindex everyone's."""
+    ids = await repository.list_file_ids(user_id)
+    for node_id in ids:
+        await ingest.process_file(node_id)
+    return {"reindexed": len(ids)}
+
+
 @router.post("/search/vector", response_model=list[VectorSearchResult])
 async def search_vector(body: VectorSearchRequest):
     """Semantic search over embedded chunks — the search_files agent tool.

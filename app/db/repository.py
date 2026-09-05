@@ -292,10 +292,10 @@ async def delete_node(user_id: str, node_id: str) -> None:
     for key in object_keys:
         await asyncio.to_thread(minio_client.delete_object, key)
 
-    if settings.OPENAI_API_KEY:
+    if settings.EMBEDDING_API_KEY:
         # Local import: keeps a hard Qdrant dependency out of this function
-        # for phase-1/2-only deployments — without OPENAI_API_KEY nothing
-        # was ever embedded, so there's nothing in Qdrant to clean up.
+        # for deployments with no embedding key — nothing was ever embedded,
+        # so there's nothing in Qdrant to clean up.
         from app.search import vector_store
 
         for file_id in file_ids:
@@ -337,6 +337,17 @@ async def search_grep(user_id: str, query: str, path: str = "/", limit: int = 50
         d["path"] = await get_display_path(n.id)
         out.append(d)
     return out
+
+
+async def list_file_ids(user_id: str | None = None) -> list[str]:
+    """Every file-type node's id — for POST /files/reindex (re-run the ingest
+    pipeline over existing files, e.g. after switching embedding models)."""
+    async with get_sessionmaker()() as session:
+        stmt = select(FileNode.id).where(FileNode.type == "file")
+        if user_id is not None:
+            stmt = stmt.where(FileNode.user_id == user_id)
+        result = await session.execute(stmt)
+        return [row[0] for row in result]
 
 
 async def set_indexing_status(node_id: str, status: str) -> None:
