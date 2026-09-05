@@ -1,0 +1,98 @@
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+
+from app.api.deps import verify_internal_key
+from app.db import repository
+from app.schemas.files import (
+    FileNodeOut,
+    FileSearchResult,
+    FolderCreate,
+    NodeDetail,
+    NodeUpdate,
+    VectorSearchRequest,
+    VectorSearchResult,
+)
+from app.services import ingest, search as search_service
+
+router = APIRouter(dependencies=[Depends(verify_internal_key)])
+
+
+@router.post("/folders", response_model=FileNodeOut)
+async def create_folder(body: FolderCreate):
+    try:
+        return await repository.create_folder(body.user_id, body.parent_path, body.name)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/tree", response_model=list[FileNodeOut])
+async def list_tree(user_id: str, path: str = "/"):
+    try:
+        return await repository.list_children(user_id, path)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/files", response_model=FileNodeOut)
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    user_id: str = Form(...),
+    parent_path: str = Form("/"),
+    file: UploadFile = File(...),
+):
+    content = await file.read()
+    try:
+        node = await repository.create_file(user_id, parent_path, file.filename, content, file.content_type)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    # Returns immediately ("pending"); extraction runs after the response is
+    # sent — see services/ingest.py.
+    background_tasks.add_task(ingest.process_file, node["id"])
+    return node
+
+
+@router.get("/nodes/{node_id}", response_model=NodeDetail | None)
+async def get_node(node_id: str, user_id: str):
+    return await repository.get_node(user_id, node_id)
+
+
+@router.get("/resolve", response_model=NodeDetail | None)
+async def resolve_path(user_id: str, path: str):
+    """Turns a "/a/b.txt"-style path into a node — used by the read_file/
+    grep_files agent tools, which only have a path string. GET /tree already
+    covers the list_files tool directly (it takes a path natively)."""
+    return await repository.resolve_path(user_id, path)
+
+
+@router.patch("/nodes/{node_id}", response_model=FileNodeOut)
+async def update_node(node_id: str, user_id: str, body: NodeUpdate):
+    try:
+        return await repository.rename_or_move(user_id, node_id, body.name, body.parent_path)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.delete("/nodes/{node_id}")
+async def delete_node(node_id: str, user_id: str):
+    await repository.delete_node(user_id, node_id)
+    return {"ok": True}
+
+
+@router.get("/search/grep", response_model=list[FileSearchResult])
+async def grep_files(user_id: str, query: str, path: str = "/"):
+    """Plain keyword search over name + extracted content — the
+    grep_files agent tool. See POST /search/vector (phase 3) for the
+    semantic half of hybrid search."""
+    try:
+        return await repository.search_grep(user_id, query, path)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/search/vector", response_model=list[VectorSearchResult])
+async def search_vector(body: VectorSearchRequest):
+    """Semantic search over embedded chunks — the search_files agent tool.
+    See GET /search/grep for the keyword half of hybrid search."""
+    try:
+        return await search_service.search_vector(body.user_id, body.query, body.top_k)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -1,0 +1,49 @@
+# Migrations
+
+Database schema migrations managed by Alembic.
+
+## How it works
+
+Schema is defined in `app/db/models.py` using SQLAlchemy declarative models.
+Alembic diffs the models against the live database and generates migration files automatically.
+
+This service owns a dedicated database (`jarvis_files`, nothing else is ever
+provisioned into it) — same posture as jarvis-conversation-service, no
+`include_object` filtering or custom schema needed.
+
+## Commands
+
+Run from the `jarvis-file-service/` directory.
+
+```bash
+# Apply all pending migrations
+make migrate
+
+# Auto-generate a new migration after editing models.py
+make migration name="describe_what_changed"
+
+# Check current migration state
+.venv/bin/alembic current
+
+# View migration history
+.venv/bin/alembic history
+
+# Rollback one migration
+.venv/bin/alembic downgrade -1
+
+# Rollback all migrations
+.venv/bin/alembic downgrade base
+```
+
+## Workflow
+
+1. Edit `app/db/models.py` — add a table, column, index, etc.
+2. Run `make migration name="add_something"`
+3. Review the generated file in `migrations/versions/`
+4. Run `make migrate` to apply
+
+## Versions
+
+| Revision | Description |
+|---|---|
+| `0001` | Create `file_nodes` — the per-user folder/file tree (phase 1: tree + MinIO blobs). `extracted_text`/`indexing_status` columns are forward-declared for phase 2/3 (text extraction, embeddings) but unused until then. |
