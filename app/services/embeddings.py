@@ -19,5 +19,10 @@ def _get_client() -> OpenAI:
 def embed(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
-    response = _get_client().embeddings.create(model=settings.EMBEDDING_MODEL, input=texts)
+    kwargs = {"model": settings.EMBEDDING_MODEL, "input": texts}
+    # Only pass `dimensions` when configured — bge-m3 (and most open models)
+    # reject it; text-embedding-3 needs it to return a non-native size.
+    if settings.EMBEDDING_DIMENSIONS:
+        kwargs["dimensions"] = settings.EMBEDDING_DIMENSIONS
+    response = _get_client().embeddings.create(**kwargs)
     return [d.embedding for d in response.data]

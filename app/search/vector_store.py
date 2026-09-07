@@ -10,7 +10,10 @@ from qdrant_client.http import models as qm
 from app.core.config import settings
 
 _COLLECTION = "file_chunks"
-_VECTOR_SIZE = 1024  # baai/bge-m3 (see app/core/config.py EMBEDDING_MODEL)
+# Must match what embed() returns — currently openai/text-embedding-3-large
+# truncated to 1024 dims (see EMBEDDING_DIMENSIONS in config.py). Changing
+# the size means dropping + rebuilding the collection.
+_VECTOR_SIZE = settings.EMBEDDING_DIMENSIONS or 1024
 
 _client: QdrantClient | None = None
 
