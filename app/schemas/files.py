@@ -46,6 +46,20 @@ class VectorSearchRequest(BaseModel):
     top_k: int = 5
 
 
+class RerankRequest(BaseModel):
+    query: str
+    documents: list[str]
+    top_n: int | None = None
+
+
+class RerankResult(BaseModel):
+    """`index` refers back into the caller's `documents` list — the caller
+    holds the full chunk metadata, so only the ordering travels back."""
+
+    index: int
+    score: float
+
+
 class VectorSearchResult(BaseModel):
     file_id: str
     path: str

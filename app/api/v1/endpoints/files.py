@@ -5,6 +5,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from app.api.deps import verify_internal_key
 from app.db import repository
 from app.schemas.files import (
+    RerankRequest,
+    RerankResult,
     FileNodeOut,
     FileSearchResult,
     FolderCreate,
@@ -13,7 +15,7 @@ from app.schemas.files import (
     VectorSearchRequest,
     VectorSearchResult,
 )
-from app.services import ingest, search as search_service
+from app.services import ingest, rerank as rerank_service, search as search_service
 from app.storage import minio_client
 
 router = APIRouter(dependencies=[Depends(verify_internal_key)])
@@ -129,3 +131,18 @@ async def search_vector(body: VectorSearchRequest):
         return await search_service.search_vector(body.user_id, body.query, body.top_k)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/search/rerank", response_model=list[RerankResult])
+async def rerank_documents(body: RerankRequest):
+    """Reorder candidate passages by how well they answer `query`.
+
+    Separate from /search/vector because the caller assembles the pool first:
+    agentic retrieval issues several sub-queries and merges their results, and
+    reranking is only meaningful once that merge has happened.
+
+    With no reranker configured this returns the input order with zero scores,
+    so the caller can treat "no opinion" and "unconfigured" the same way.
+    """
+    pairs = await rerank_service.rerank(body.query, body.documents, body.top_n)
+    return [RerankResult(index=i, score=s) for i, s in pairs]

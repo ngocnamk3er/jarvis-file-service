@@ -37,6 +37,24 @@ class Settings(BaseSettings):
     # MUST match the Qdrant collection (see app/search/vector_store.py).
     EMBEDDING_DIMENSIONS: int | None = 1024
 
+    # Cross-encoder reranking over vector-search candidates. Optional: with no
+    # key, search falls back to plain embedding order rather than failing.
+    #
+    # OpenRouter serves this, so the existing key works — but note rerank
+    # models do NOT appear in its /models listing and are rejected by
+    # /chat/completions, which makes them easy to conclude don't exist. They
+    # are reachable only at POST /api/v1/rerank.
+    #
+    # qwen3-reranker is multilingual, which matters: retrieval here is often a
+    # Vietnamese question against English documents. Measured on exactly that
+    # case, it scored the right passage 1.0 and everything else under 0.0001.
+    # Jina (https://api.jina.ai/v1, jina-reranker-v2-base-multilingual) and
+    # Cohere both speak the same request/response shape if this ever needs to
+    # move.
+    RERANK_API_KEY: str = ""
+    RERANK_BASE_URL: str = "https://openrouter.ai/api/v1"
+    RERANK_MODEL: str = "qwen/qwen3-reranker-8b"
+
     class Config:
         env_file = ".env"
         case_sensitive = True
