@@ -98,8 +98,40 @@ def _get_ocr():
     if _ocr_engine is None:
         from paddleocr import PaddleOCR
 
-        _ocr_engine = PaddleOCR(use_angle_cls=True, lang=settings.OCR_LANG, show_log=False)
+        # PaddleOCR renamed its constructor arguments between 2.x and 3.x
+        # (`use_angle_cls` became `use_textline_orientation`, `show_log`
+        # went away), and neither version is pinned here because the
+        # wheels are installed outside requirements.txt. Try the current
+        # spelling, fall back to the old one.
+        common = {"lang": settings.OCR_LANG, "enable_mkldnn": settings.OCR_USE_MKLDNN}
+        try:
+            _ocr_engine = PaddleOCR(use_textline_orientation=True, **common)
+        except TypeError:
+            _ocr_engine = PaddleOCR(use_angle_cls=True, show_log=False, **common)
     return _ocr_engine
+
+
+def _read_ocr_result(raw) -> list[tuple[list, str, float]]:
+    """(quad, text, confidence) per line, from either result format.
+
+    3.x returns one dict per image with parallel `rec_polys` / `rec_texts`
+    / `rec_scores` lists; 2.x returns a list per image of
+    `[quad, (text, confidence)]`. Normalising here keeps the caller from
+    caring which is installed.
+    """
+    if not raw:
+        return []
+    first = raw[0]
+    if isinstance(first, dict):
+        polys = first.get("rec_polys")
+        if polys is None:
+            polys = first.get("dt_polys") or []
+        texts = first.get("rec_texts") or []
+        scores = first.get("rec_scores") or []
+        return list(zip(polys, texts, scores))
+    if first is None:
+        return []
+    return [(quad, text, score) for quad, (text, score) in first]
 
 
 def _ocr_image(image, page: int) -> list[Span]:
@@ -113,17 +145,16 @@ def _ocr_image(image, page: int) -> list[Span]:
 
     arr = np.array(image.convert("RGB"))
     h, w = arr.shape[0], arr.shape[1]
-    raw = _get_ocr().ocr(arr, cls=True)
-    if not raw or raw[0] is None:
-        return []
 
     spans = []
-    for quad, (text, confidence) in raw[0]:
+    for quad, text, confidence in _read_ocr_result(_get_ocr().ocr(arr)):
         if not text.strip() or confidence < settings.OCR_MIN_CONFIDENCE:
             continue
-        xs = [p[0] for p in quad]
-        ys = [p[1] for p in quad]
-        spans.append(Span(text.strip(), page, _norm(min(xs), min(ys), max(xs), max(ys), w, h)))
+        points = np.asarray(quad).reshape(-1, 2)
+        xs, ys = points[:, 0], points[:, 1]
+        spans.append(
+            Span(text.strip(), page, _norm(xs.min(), ys.min(), xs.max(), ys.max(), w, h))
+        )
     return spans
 
 

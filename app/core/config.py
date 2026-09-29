@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     # and the low end is mostly page furniture and scan artefacts, which
     # cost embedding budget and pollute retrieval.
     OCR_MIN_CONFIDENCE: float = 0.5
+    # oneDNN acceleration. Off by default because it is not portable: on
+    # this host PaddleOCR 3.7 dies inside it with "ConvertPirAttribute2
+    # RuntimeAttribute not support", and the same wheels work fine with it
+    # disabled. Turn it on where it is known good — it is meaningfully
+    # faster — but verify a real page first.
+    OCR_USE_MKLDNN: bool = False
 
     # Cross-encoder reranking over vector-search candidates. Optional: with no
     # key, search falls back to plain embedding order rather than failing.
