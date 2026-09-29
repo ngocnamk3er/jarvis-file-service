@@ -35,7 +35,16 @@ def _get_client() -> QdrantClient:
     return _client
 
 
-def upsert_chunks(file_id: str, user_id: str, path: str, chunks: list[str], vectors: list[list[float]]) -> None:
+def upsert_chunks(file_id: str, user_id: str, path: str, chunks, vectors: list[list[float]]) -> None:
+    """`chunks` are services.chunking.Chunk. Their page/boxes/offsets ride
+    along in the payload, which Qdrant stores schemalessly — so adding them
+    needed no collection rebuild, and points written before they existed
+    stay readable, just without the new keys.
+
+    A chunk from a format with no coordinates carries page 0 and no boxes.
+    Zero rather than null because it stays comparable in a Qdrant filter,
+    and because page numbers are 1-based everywhere else, so 0 cannot
+    collide with a real page."""
     # A re-ingest (re-upload with the same file id would only happen via a
     # future "replace content" feature, not today's API — this is mainly a
     # safety net) must not leave stale chunks behind, so clear this file's
@@ -45,7 +54,21 @@ def upsert_chunks(file_id: str, user_id: str, path: str, chunks: list[str], vect
         qm.PointStruct(
             id=str(uuid4()),
             vector=vector,
-            payload={"user_id": user_id, "file_id": file_id, "chunk_index": i, "chunk_text": chunk, "path": path},
+            payload={
+                "user_id": user_id,
+                "file_id": file_id,
+                "chunk_index": i,
+                "chunk_text": chunk.text,
+                "path": path,
+                "page_start": chunk.page_start,
+                "page_end": chunk.page_end,
+                # [[page, [x0, top, x1, bottom]], ...] — fractions of the
+                # page, origin top-left. A list, not a tuple, so it
+                # round-trips through Qdrant's JSON unchanged.
+                "boxes": [[page, list(box)] for page, box in chunk.boxes],
+                "char_start": chunk.char_start,
+                "char_end": chunk.char_end,
+            },
         )
         for i, (chunk, vector) in enumerate(zip(chunks, vectors))
     ]
@@ -77,6 +100,14 @@ def search(user_id: str, query_vector: list[float], top_k: int) -> list[dict]:
             "path": h.payload["path"],
             "chunk_text": h.payload["chunk_text"],
             "score": h.score,
+            # .get, not [] — points indexed before this existed have no
+            # such keys, and a stale point should degrade to "no
+            # coordinates" rather than break the whole search.
+            "page_start": h.payload.get("page_start", 0),
+            "page_end": h.payload.get("page_end", 0),
+            "boxes": h.payload.get("boxes", []),
+            "char_start": h.payload.get("char_start", 0),
+            "char_end": h.payload.get("char_end", 0),
         }
         for h in response.points
     ]

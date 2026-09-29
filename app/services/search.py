@@ -1,7 +1,9 @@
-"""Semantic half of hybrid search (search_files agent tool). The keyword
-half (grep_files) lives in db/repository.py's search_grep — it only touches
-Postgres, so it didn't need a home outside the repository module; this one
-touches OpenAI + Qdrant instead, hence its own module."""
+"""Semantic search over a user's files (the search_files agent tool).
+
+Lives outside the repository module because it touches the embedding API
+and Qdrant rather than Postgres. Results carry the page and boxes the
+chunk came from when the source format had them — see services/layout.py
+for how those are derived and why they are stored as fractions."""
 
 import asyncio
 

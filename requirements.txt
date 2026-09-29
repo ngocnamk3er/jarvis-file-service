@@ -15,3 +15,18 @@ qdrant-client>=1.9.0
 openai>=1.30.0
 pypdf>=4.2.0
 python-docx>=1.1.0
+
+# Word-level boxes out of a PDF's text layer (services/layout.py). pypdf
+# reads the text but reports no coordinates, so it cannot answer "where on
+# the page"; pdfplumber is MIT, unlike PyMuPDF which is AGPL.
+pdfplumber>=0.11.0
+# Rasterises a page for OCR. Self-contained wheel — pdf2image would pull in
+# poppler, wand would pull in ImageMagick.
+pypdfium2>=4.30.0
+pillow>=10.0.0
+# OCR itself is NOT installed here. paddleocr + paddlepaddle are ~2GB and
+# would dominate both the image and the build; install them in the image
+# that needs them and set OCR_ENABLED=true. Everything else degrades to the
+# text-layer path on its own (see layout.ocr_available).
+#   paddleocr>=2.7.0
+#   paddlepaddle>=2.6.0

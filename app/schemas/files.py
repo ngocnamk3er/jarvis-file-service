@@ -65,3 +65,17 @@ class VectorSearchResult(BaseModel):
     path: str
     chunk_text: str
     score: float
+    # Where the chunk sits in the document. page 0 and an empty `boxes`
+    # mean the format carries no coordinates (a .docx has no fixed
+    # pagination, a .txt no pages at all) — not that extraction failed.
+    page_start: int = 0
+    page_end: int = 0
+    # [[page, [x0, top, x1, bottom]], ...] with every coordinate a
+    # fraction of the page, origin top-left. One entry per line of text,
+    # so a viewer can draw the highlight where the words actually are
+    # instead of boxing the whole chunk.
+    boxes: list[tuple[int, tuple[float, float, float, float]]] = []
+    # Offsets into the file's extracted_text, so a caller holding that
+    # string can locate the hit without re-deriving it.
+    char_start: int = 0
+    char_end: int = 0

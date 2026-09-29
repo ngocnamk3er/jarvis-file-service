@@ -37,6 +37,21 @@ class Settings(BaseSettings):
     # MUST match the Qdrant collection (see app/search/vector_store.py).
     EMBEDDING_DIMENSIONS: int | None = 1024
 
+    # OCR for pages and images with no text layer (services/layout.py).
+    # Off by default and checked at import as well as by this flag, because
+    # PaddleOCR and its runtime are a large dependency an image may ship
+    # without — with it unavailable, ingest keeps to the text-layer path
+    # rather than failing files it cannot read.
+    OCR_ENABLED: bool = False
+    # PaddleOCR's Vietnamese model. Its "vi" recognises Latin script with
+    # Vietnamese diacritics; "en" drops the diacritics, which for this
+    # corpus loses the words rather than just the accents.
+    OCR_LANG: str = "vi"
+    # Recognitions below this are dropped. OCR reports confidence per line
+    # and the low end is mostly page furniture and scan artefacts, which
+    # cost embedding budget and pollute retrieval.
+    OCR_MIN_CONFIDENCE: float = 0.5
+
     # Cross-encoder reranking over vector-search candidates. Optional: with no
     # key, search falls back to plain embedding order rather than failing.
     #
