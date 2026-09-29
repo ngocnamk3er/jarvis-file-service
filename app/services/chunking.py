@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 
 from app.services.layout import Span
@@ -7,25 +8,6 @@ from app.services.layout import Span
 # mixed font sizes all shift it — so grouping on exact equality would
 # leave a box per word and a payload several times larger than the text.
 _LINE_TOLERANCE = 0.006
-
-
-def chunk_text(text: str, chunk_words: int = 300, overlap_words: int = 50) -> list[str]:
-    """Word-count chunking with overlap — simpler than a token-accurate
-    splitter (no tokenizer dependency) and close enough for embedding-sized
-    chunks at this project's scale."""
-    words = text.split()
-    if not words:
-        return []
-    if len(words) <= chunk_words:
-        return [text.strip()]
-
-    step = chunk_words - overlap_words
-    chunks = []
-    for start in range(0, len(words), step):
-        chunks.append(" ".join(words[start : start + chunk_words]))
-        if start + chunk_words >= len(words):
-            break
-    return chunks
 
 
 @dataclass
@@ -57,6 +39,51 @@ def spans_to_text(spans: list[Span]) -> str:
     offsets into, so ingest must store exactly this and nothing prettier.
     """
     return " ".join(s.text for s in spans)
+
+
+def chunk_text(text: str, chunk_words: int = 300, overlap_words: int = 50) -> list[Chunk]:
+    """Word-count chunking with overlap, for a format with no page geometry
+    to report (.txt, .docx, a PDF that yielded no spans). Mirrors
+    chunk_spans' shape — page 0 and no boxes, since there is nothing to
+    point a viewer at beyond the text itself — so ingest can pick between
+    the two with a plain `if spans else` and never build a Chunk by hand.
+
+    Bug fixed here: this used to return `list[str]`, and the caller built
+    `Chunk(text=t, page_start=0, page_end=0)` with no char_start/char_end —
+    every chunk landed with those at their dataclass default of 0, so
+    TextExcerpt's `text.slice(char_start, char_end)` highlighted nothing
+    for every plain-text file. Caught 2026-09-30 via a live citation whose
+    char_start/char_end were both 0 despite matching real content.
+
+    Offsets come from `re.finditer(r"\\S+", text)` rather than
+    `text.split()`, which discards exactly the position information an
+    index into the ORIGINAL string needs — `text.split()` only gives back
+    the words, and re-joining them with `" ".join(...)` produces a string
+    that no longer matches `text` character-for-character (runs of
+    whitespace collapse to one space each). Slicing `text[start:end]`
+    instead keeps `chunk.text == text[chunk.char_start:chunk.char_end]`
+    exactly, the same invariant chunk_spans already gives for the
+    span-based path.
+    """
+    words = list(re.finditer(r"\S+", text))
+    if not words:
+        return []
+
+    def _window(matches: list[re.Match]) -> Chunk:
+        start, end = matches[0].start(), matches[-1].end()
+        return Chunk(text=text[start:end], page_start=0, page_end=0, char_start=start, char_end=end)
+
+    if len(words) <= chunk_words:
+        return [_window(words)]
+
+    step = chunk_words - overlap_words
+    chunks = []
+    for i in range(0, len(words), step):
+        window = words[i : i + chunk_words]
+        chunks.append(_window(window))
+        if i + chunk_words >= len(words):
+            break
+    return chunks
 
 
 def _merge_boxes(spans: list[Span]) -> list[tuple[int, tuple[float, float, float, float]]]:

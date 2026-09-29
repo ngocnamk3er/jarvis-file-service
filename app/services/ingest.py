@@ -24,7 +24,7 @@ import asyncio
 from app.core.config import settings
 from app.db import repository
 from app.search import vector_store
-from app.services.chunking import Chunk, chunk_spans, chunk_text, spans_to_text
+from app.services.chunking import chunk_spans, chunk_text, spans_to_text
 from app.services.embeddings import embed
 from app.services.extraction import extract_text
 from app.services.layout import extract_spans
@@ -64,11 +64,7 @@ async def process_file(node_id: str) -> None:
 
     await repository.set_indexing_status(node_id, "embedding")
     try:
-        chunks = (
-            chunk_spans(spans)
-            if spans
-            else [Chunk(text=t, page_start=0, page_end=0) for t in chunk_text(text)]
-        )
+        chunks = chunk_spans(spans) if spans else chunk_text(text)
         vectors = await asyncio.to_thread(embed, [c.text for c in chunks])
         path = await repository.get_display_path(node_id)
         await asyncio.to_thread(
