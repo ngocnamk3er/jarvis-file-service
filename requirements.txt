@@ -4,7 +4,12 @@ pydantic>=2.9.2
 pydantic-settings>=2.10.1
 python-dotenv==1.0.1
 psycopg[binary,pool]>=3.1.0
-sqlalchemy>=2.0.0
+# The [asyncio] extra is what brings greenlet, which SQLAlchemy's async
+# engine cannot run without. Up to 2.0 greenlet came along by default, so
+# the bare name worked; 2.1 dropped it, and the first rebuild to resolve
+# 2.1 (2026-09-29) produced an image that crashed at import with "requires
+# that the Python 'greenlet' library is installed".
+sqlalchemy[asyncio]>=2.0.0
 alembic>=1.13.0
 # Required by FastAPI to parse multipart/form-data (Form fields + UploadFile)
 # on POST /files.
