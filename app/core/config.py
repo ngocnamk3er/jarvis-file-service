@@ -38,11 +38,11 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int | None = 1024
 
     # OCR for pages and images with no text layer (services/layout.py).
-    # Off by default and checked at import as well as by this flag, because
-    # PaddleOCR and its runtime are a large dependency an image may ship
-    # without — with it unavailable, ingest keeps to the text-layer path
-    # rather than failing files it cannot read.
-    OCR_ENABLED: bool = False
+    # On by default now that the wheels are in requirements.txt. Still
+    # checked at import as well as by this flag, so an image built without
+    # them — or a local checkout that skipped the ~1.5GB install — keeps to
+    # the text-layer path instead of failing files it cannot read.
+    OCR_ENABLED: bool = True
     # PaddleOCR's Vietnamese model. Its "vi" recognises Latin script with
     # Vietnamese diacritics; "en" drops the diacritics, which for this
     # corpus loses the words rather than just the accents.

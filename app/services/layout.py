@@ -105,7 +105,18 @@ def _get_ocr():
         # spelling, fall back to the old one.
         common = {"lang": settings.OCR_LANG, "enable_mkldnn": settings.OCR_USE_MKLDNN}
         try:
-            _ocr_engine = PaddleOCR(use_textline_orientation=True, **common)
+            _ocr_engine = PaddleOCR(
+                use_textline_orientation=True,
+                # 3.x defaults both of these on, which loads two more
+                # models (~38MB) to straighten a photographed page and
+                # guess its rotation. Our input is a page we rendered
+                # ourselves at a known orientation, or an upload that is
+                # already the right way up — so it is inference cost and
+                # image size spent on a problem we do not have.
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                **common,
+            )
         except TypeError:
             _ocr_engine = PaddleOCR(use_angle_cls=True, show_log=False, **common)
     return _ocr_engine

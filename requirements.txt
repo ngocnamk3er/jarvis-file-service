@@ -24,9 +24,10 @@ pdfplumber>=0.11.0
 # poppler, wand would pull in ImageMagick.
 pypdfium2>=4.30.0
 pillow>=10.0.0
-# OCR itself is NOT installed here. paddleocr + paddlepaddle are ~2GB and
-# would dominate both the image and the build; install them in the image
-# that needs them and set OCR_ENABLED=true. Everything else degrades to the
-# text-layer path on its own (see layout.ocr_available).
-#   paddleocr>=2.7.0
-#   paddlepaddle>=2.6.0
+# OCR for pages and images with no text layer. Large — paddle alone unpacks
+# to ~719MB — which is why the Dockerfile caches pip downloads and the
+# Jenkinsfile builds on the host network; without both, one edit to this
+# file costs an hours-long rebuild. layout.ocr_available() still degrades to
+# the text-layer path if they are ever missing at runtime.
+paddleocr>=3.0.0
+paddlepaddle>=3.0.0
