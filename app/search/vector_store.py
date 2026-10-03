@@ -131,11 +131,18 @@ def _strip_box_offsets(boxes: list) -> list:
 
 
 def _hit(payload: dict, score: float) -> dict:
-    """One search result, whichever of the two query paths below found it.
+    """One search result, whichever of the query paths below found it.
 
     .get, not [], on the citation fields: points upserted before they
     existed have no such keys, and a stale point should degrade to "no
     coordinates" rather than break the whole search.
+
+    exact_boxes/exact_char_start/exact_char_end default to "nothing" —
+    only search_hybrid ever fills them in (see _locate_exact_match), for
+    a hit whose full chunk is shown as relevant-by-meaning (`boxes`/
+    `char_start`/`char_end`, unchanged) AND that also contains the query
+    verbatim: a citation UI can draw both, instead of picking one
+    explanation over the other.
     """
     return {
         "file_id": payload["file_id"],
@@ -147,6 +154,9 @@ def _hit(payload: dict, score: float) -> dict:
         "boxes": _strip_box_offsets(payload.get("boxes", [])),
         "char_start": payload.get("char_start", 0),
         "char_end": payload.get("char_end", 0),
+        "exact_boxes": [],
+        "exact_char_start": 0,
+        "exact_char_end": 0,
     }
 
 
@@ -193,29 +203,40 @@ def _find_match(text: str, query: str) -> tuple[int, int] | None:
     return None
 
 
-def _narrow_boxes(boxes: list, chunk_text: str, query: str) -> list:
-    """`boxes` cut down to just the line(s) that actually contain where
-    `query` matched, instead of every line in the chunk.
+def _locate_exact_match(payload: dict, query: str) -> dict:
+    """Where `query` literally matches inside this chunk — the box(es)
+    whose line it falls on, and the absolute char span into
+    extracted_text — or `{}` if it doesn't match verbatim anywhere.
 
-    A chunk can be the entire text of a short document — a 2-page PDF
-    under the 300-word chunk threshold collapses to one chunk, whose
-    boxes then cover the whole document (confirmed live 2026-10-03: a
-    test file highlighted almost in full for an exact-match hit near
-    its end). Exact search knows precisely which substring matched,
-    unlike semantic search's whole-chunk relevance, so it can do better.
+    Shared by search_fulltext (the whole-chunk narrows down to exactly
+    this) and search_hybrid (this rides alongside the full chunk, as a
+    second, independent reason the hit matched). A chunk can be the
+    entire text of a short document — a 2-page PDF under the 300-word
+    chunk threshold collapses to one chunk, whose boxes then cover the
+    whole document (confirmed live 2026-10-03: a test file highlighted
+    almost in full for an exact-match hit near its end) — so narrowing
+    down to the actual line matters whenever a literal match is known.
 
-    Falls back to every box, offsets stripped, when there is nothing to
-    narrow by: no verbatim match, or a box that predates the per-box
-    char range this needs (2-element — indexed before this existed).
+    `exact_boxes` is left out of the result (not an empty list) when
+    there are no boxes to narrow, or they predate the per-box char range
+    this needs (2-element — indexed before this existed) — the caller
+    can tell "nothing to narrow" apart from "narrowed to nothing".
     """
-    if not boxes or len(boxes[0]) < 3:
-        return _strip_box_offsets(boxes)
-    match = _find_match(chunk_text, query)
-    if match is None:
-        return _strip_box_offsets(boxes)
-    start, end = match
-    narrowed = [[page, bbox] for page, bbox, (cs, ce) in boxes if cs < end and ce > start]
-    return narrowed or _strip_box_offsets(boxes)
+    local = _find_match(payload["chunk_text"], query)
+    if local is None:
+        return {}
+    local_start, local_end = local
+    base = payload.get("char_start", 0)
+    result: dict = {
+        "exact_char_start": base + local_start,
+        "exact_char_end": base + local_end,
+    }
+    boxes = payload.get("boxes", [])
+    if boxes and len(boxes[0]) >= 3:
+        result["exact_boxes"] = [
+            [page, bbox] for page, bbox, (cs, ce) in boxes if cs < local_end and ce > local_start
+        ]
+    return result
 
 
 def search(user_id: str, query_vector: list[float], top_k: int) -> list[dict]:
@@ -247,6 +268,12 @@ def search_fulltext(user_id: str, query: str, top_k: int, phrase: bool = True) -
     number that would imply degrees of match that were never computed —
     order here is Qdrant's scroll order (insertion order), not
     relevance.
+
+    boxes/char_start/char_end are narrowed in place to wherever `query`
+    actually matched (see _locate_exact_match) — unlike search_hybrid,
+    there is no "whole chunk" relevance to show alongside here, exact
+    search's whole point is the literal location, so the narrowed span
+    replaces the full one rather than riding beside it.
     """
     condition = qm.MatchPhrase(phrase=query) if phrase else qm.MatchText(text=query)
     points, _ = _get_client().scroll(
@@ -264,6 +291,80 @@ def search_fulltext(user_id: str, query: str, top_k: int, phrase: bool = True) -
     hits = []
     for p in points:
         hit = _hit(p.payload, 1.0)
-        hit["boxes"] = _narrow_boxes(p.payload.get("boxes", []), p.payload["chunk_text"], query)
+        located = _locate_exact_match(p.payload, query)
+        if "exact_boxes" in located:
+            hit["boxes"] = located["exact_boxes"]
+        if "exact_char_start" in located:
+            hit["char_start"] = located["exact_char_start"]
+            hit["char_end"] = located["exact_char_end"]
+        hits.append(hit)
+    return hits
+
+
+# The constant from the original Reciprocal Rank Fusion paper (Cormack et
+# al., 2009) — large enough that rank 1 vs rank 2 in a single list isn't
+# wildly more valuable than appearing in *both* lists at a modest rank,
+# which is the entire point of fusing two signals instead of picking one.
+_RRF_K = 60
+
+
+def search_hybrid(user_id: str, query_vector: list[float], query_text: str, top_k: int) -> list[dict]:
+    """Semantic search, Reciprocal-Rank-Fused with a keyword pass over
+    the same points — catches both "the right meaning" and "the right
+    literal words" in one ranked list, rather than forcing a caller to
+    pick search() or search_fulltext() upfront. A chunk that ranks
+    highly on *either* signal surfaces; one that ranks on both outranks
+    either alone.
+
+    Each hit keeps its full chunk_text/boxes/char_start/char_end — why
+    it's relevant by meaning — and, when query_text also appears in it
+    verbatim, exact_boxes/exact_char_start/exact_char_end alongside (see
+    _locate_exact_match) — why it's *also* relevant by the literal
+    words. A citation UI can show both at once (e.g. the whole chunk one
+    color, the literal hit another) instead of picking one explanation.
+
+    The keyword pass uses MatchText (any word present, any order) rather
+    than search_fulltext's default MatchPhrase — this is a recall
+    booster for semantic search, not a precise exact-phrase lookup, so
+    the wider net is the right default here.
+
+    `score` on each hit is its RRF score (typically small, ~0.01-0.03),
+    not a cosine similarity — a caller formatting this for display
+    should label it accordingly rather than call it "similarity".
+    """
+    pool = max(top_k * 3, 15)  # headroom so fusion has real candidates to combine, not just top_k from each
+    user_filter = qm.Filter(must=[qm.FieldCondition(key="user_id", match=qm.MatchValue(value=user_id))])
+    vec_response = _get_client().query_points(
+        collection_name=_COLLECTION, query=query_vector, query_filter=user_filter, limit=pool,
+    )
+    kw_points, _ = _get_client().scroll(
+        collection_name=_COLLECTION,
+        scroll_filter=qm.Filter(
+            must=[
+                qm.FieldCondition(key="user_id", match=qm.MatchValue(value=user_id)),
+                qm.FieldCondition(key="chunk_text", match=qm.MatchText(text=query_text)),
+            ]
+        ),
+        limit=pool,
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    rrf_scores: dict[str, float] = {}
+    payloads: dict[str, dict] = {}
+    for rank, p in enumerate(vec_response.points):
+        rrf_scores[p.id] = rrf_scores.get(p.id, 0.0) + 1.0 / (_RRF_K + rank)
+        payloads[p.id] = p.payload
+    for rank, p in enumerate(kw_points):
+        rrf_scores[p.id] = rrf_scores.get(p.id, 0.0) + 1.0 / (_RRF_K + rank)
+        payloads.setdefault(p.id, p.payload)
+
+    ranked_ids = sorted(rrf_scores, key=lambda pid: rrf_scores[pid], reverse=True)[:top_k]
+
+    hits = []
+    for pid in ranked_ids:
+        payload = payloads[pid]
+        hit = _hit(payload, rrf_scores[pid])
+        hit.update(_locate_exact_match(payload, query_text))
         hits.append(hit)
     return hits

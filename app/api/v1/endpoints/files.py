@@ -129,9 +129,13 @@ async def reindex(user_id: str | None = None):
 
 @router.post("/search/vector", response_model=list[VectorSearchResult])
 async def search_vector(body: VectorSearchRequest):
-    """Semantic search over embedded chunks — the search_files agent
-    tool's default mode. See POST /search/fulltext for the exact-match
-    half of hybrid search, same tool's `exact=True`."""
+    """Semantic search over embedded chunks, RRF-fused with a keyword
+    pass over the same points (see vector_store.search_hybrid) — the
+    search_files agent tool's default mode. A result's exact_boxes/
+    exact_char_start/exact_char_end are populated when the query also
+    matched it verbatim, alongside (not instead of) the whole-chunk
+    boxes/char_start/char_end. See POST /search/fulltext for the
+    precise, phrase-only exact-match mode, same tool's `exact=True`."""
     try:
         return await search_service.search_vector(body.user_id, body.query, body.top_k)
     except ValueError as e:

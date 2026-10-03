@@ -89,3 +89,11 @@ class VectorSearchResult(BaseModel):
     # string can locate the hit without re-deriving it.
     char_start: int = 0
     char_end: int = 0
+    # search_hybrid only: where query_text also matches this chunk
+    # verbatim, alongside (not instead of) the whole-chunk fields above —
+    # empty/0 when nothing matched literally, or for any result from
+    # search()/search_fulltext(), which never populate these. Same page/
+    # fraction-of-page shape as `boxes`.
+    exact_boxes: list[tuple[int, tuple[float, float, float, float]]] = []
+    exact_char_start: int = 0
+    exact_char_end: int = 0
