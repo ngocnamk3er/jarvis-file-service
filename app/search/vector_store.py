@@ -2,6 +2,7 @@
 across every user — isolation is enforced by a `user_id` payload filter on
 every query/delete, never by a separate collection per user."""
 
+import unicodedata
 from uuid import uuid4
 
 from qdrant_client import QdrantClient
@@ -92,10 +93,14 @@ def upsert_chunks(file_id: str, user_id: str, path: str, chunks, vectors: list[l
                 "path": path,
                 "page_start": chunk.page_start,
                 "page_end": chunk.page_end,
-                # [[page, [x0, top, x1, bottom]], ...] — fractions of the
-                # page, origin top-left. A list, not a tuple, so it
-                # round-trips through Qdrant's JSON unchanged.
-                "boxes": [[page, list(box)] for page, box in chunk.boxes],
+                # [[page, [x0, top, x1, bottom], [local_start, local_end]], ...]
+                # — fractions of the page, origin top-left; the char range
+                # is local to chunk.text, used to narrow boxes to a match
+                # (see _narrow_boxes). Lists, not tuples, so they round-trip
+                # through Qdrant's JSON unchanged.
+                "boxes": [
+                    [page, list(box), list(char_range)] for page, box, char_range in chunk.boxes
+                ],
                 "char_start": chunk.char_start,
                 "char_end": chunk.char_end,
             },
@@ -115,6 +120,16 @@ def delete_by_file_id(file_id: str) -> None:
     )
 
 
+def _strip_box_offsets(boxes: list) -> list:
+    """[page, bbox, (local_start, local_end)] -> [page, bbox] — the char
+    range is this module's own detail for narrowing a chunk's boxes to a
+    match (see _narrow_boxes); VectorSearchResult only ever declares
+    page + bbox, both for points indexed before per-box char ranges
+    existed (2-element boxes — box[:2] is a no-op on those) and because
+    no caller outside this module has a use for the range itself."""
+    return [box[:2] for box in boxes]
+
+
 def _hit(payload: dict, score: float) -> dict:
     """One search result, whichever of the two query paths below found it.
 
@@ -129,10 +144,78 @@ def _hit(payload: dict, score: float) -> dict:
         "score": score,
         "page_start": payload.get("page_start", 0),
         "page_end": payload.get("page_end", 0),
-        "boxes": payload.get("boxes", []),
+        "boxes": _strip_box_offsets(payload.get("boxes", [])),
         "char_start": payload.get("char_start", 0),
         "char_end": payload.get("char_end", 0),
     }
+
+
+def _fold(s: str) -> str:
+    """Strip combining diacritics, one base character left per input
+    character — NFD-decomposing a precomposed accented letter (Vietnamese
+    text is typically one codepoint per letter, e.g. "ệ") splits it into
+    exactly one base letter plus its combining marks, so dropping marks
+    of category Mn leaves a result the same *length* as the input. That
+    1:1 positional mapping is the only reason this is safe to use for
+    locating a match: a position found in folded text is the same
+    position in the original, unfolded one.
+    """
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+def _find_match(text: str, query: str) -> tuple[int, int] | None:
+    """Where `query` actually sits in `text`, diacritic- and
+    case-insensitive.
+
+    Folding both sides before comparing matters, not just for a bare
+    "nghi phep" query to find text stored as "nghỉ phép" at all (what
+    Qdrant's ascii_folding index already does for the search itself) —
+    without it, this fell back word-by-word on an unfolded miss and
+    matched "nghi" as a bare substring *inside* an unrelated word,
+    "nghiệp" (unemployment), while hunting for "nghỉ phép" (leave) —
+    confirmed live 2026-10-03, narrowing a citation to the wrong line
+    entirely. Folding first lets the whole phrase match directly where
+    it belongs, so that wrong-word fallback never triggers.
+
+    Tries the whole phrase first, then the first individual word — a
+    non-phrase (any-order) match can have its words scattered wider than
+    one contiguous span covers. Returns None, not a guess, when nothing
+    folds into a match anywhere.
+    """
+    folded_text, folded_query = _fold(text).lower(), _fold(query).lower()
+    idx = folded_text.find(folded_query)
+    if idx != -1:
+        return idx, idx + len(folded_query)
+    for word in folded_query.split():
+        idx = folded_text.find(word)
+        if idx != -1:
+            return idx, idx + len(word)
+    return None
+
+
+def _narrow_boxes(boxes: list, chunk_text: str, query: str) -> list:
+    """`boxes` cut down to just the line(s) that actually contain where
+    `query` matched, instead of every line in the chunk.
+
+    A chunk can be the entire text of a short document — a 2-page PDF
+    under the 300-word chunk threshold collapses to one chunk, whose
+    boxes then cover the whole document (confirmed live 2026-10-03: a
+    test file highlighted almost in full for an exact-match hit near
+    its end). Exact search knows precisely which substring matched,
+    unlike semantic search's whole-chunk relevance, so it can do better.
+
+    Falls back to every box, offsets stripped, when there is nothing to
+    narrow by: no verbatim match, or a box that predates the per-box
+    char range this needs (2-element — indexed before this existed).
+    """
+    if not boxes or len(boxes[0]) < 3:
+        return _strip_box_offsets(boxes)
+    match = _find_match(chunk_text, query)
+    if match is None:
+        return _strip_box_offsets(boxes)
+    start, end = match
+    narrowed = [[page, bbox] for page, bbox, (cs, ce) in boxes if cs < end and ce > start]
+    return narrowed or _strip_box_offsets(boxes)
 
 
 def search(user_id: str, query_vector: list[float], top_k: int) -> list[dict]:
@@ -178,4 +261,9 @@ def search_fulltext(user_id: str, query: str, top_k: int, phrase: bool = True) -
         with_payload=True,
         with_vectors=False,
     )
-    return [_hit(p.payload, 1.0) for p in points]
+    hits = []
+    for p in points:
+        hit = _hit(p.payload, 1.0)
+        hit["boxes"] = _narrow_boxes(p.payload.get("boxes", []), p.payload["chunk_text"], query)
+        hits.append(hit)
+    return hits

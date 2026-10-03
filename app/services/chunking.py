@@ -19,6 +19,15 @@ class Chunk:
     The rectangle enclosing all of that would cover most of the page and
     highlight nothing useful, so each line keeps its own box.
 
+    Each box carries a third element, (local_start, local_end): that
+    line's char range within `text` (this chunk's own, not the whole
+    document's). Exact-match search uses it to narrow `boxes` down to
+    just the line(s) a hit actually matched — a chunk can be the entire
+    text of a short document (see a 2026-10-03 trace: a 2-page PDF under
+    the 300-word chunk threshold highlighted almost in full, because the
+    whole thing was one chunk), and exact search knows precisely which
+    substring matched, unlike semantic search's whole-chunk relevance.
+
     `char_start`/`char_end` index into the same flat string ingest stores
     as `extracted_text`, which is what read_file returns — so a hit can be
     located in the text a caller already has, without re-deriving it.
@@ -27,7 +36,9 @@ class Chunk:
     text: str
     page_start: int
     page_end: int
-    boxes: list[tuple[int, tuple[float, float, float, float]]] = field(default_factory=list)
+    boxes: list[tuple[int, tuple[float, float, float, float], tuple[int, int]]] = field(
+        default_factory=list
+    )
     char_start: int = 0
     char_end: int = 0
 
@@ -86,25 +97,36 @@ def chunk_text(text: str, chunk_words: int = 300, overlap_words: int = 50) -> li
     return chunks
 
 
-def _merge_boxes(spans: list[Span]) -> list[tuple[int, tuple[float, float, float, float]]]:
-    """One box per line of text, in reading order.
+def _merge_boxes(
+    spans: list[Span], local_starts: list[int]
+) -> list[tuple[int, tuple[float, float, float, float], tuple[int, int]]]:
+    """One box per line of text, in reading order, each paired with the
+    char range (local to this chunk) the line covers.
 
     Spans arrive per word (text layer) or per line (OCR); either way the
     useful highlight unit is the line, so words on the same page at the
-    same height merge into the rectangle enclosing them.
+    same height merge into the rectangle enclosing them — and their char
+    ranges merge the same way, into the span from the first word's start
+    to the last word's end.
+
+    `local_starts[i]` is where `spans[i].text` begins in `spans_to_text
+    (spans)` — the caller computes it because that depends on the whole
+    window, not any one span.
     """
-    boxes: list[tuple[int, tuple[float, float, float, float]]] = []
-    for span in spans:
+    boxes: list[tuple[int, tuple[float, float, float, float], tuple[int, int]]] = []
+    for span, local_start in zip(spans, local_starts):
         x0, top, x1, bottom = span.bbox
+        local_end = local_start + len(span.text)
         if boxes:
-            last_page, (lx0, ltop, lx1, lbottom) = boxes[-1]
+            last_page, (lx0, ltop, lx1, lbottom), (cs, _ce) = boxes[-1]
             if last_page == span.page and abs(ltop - top) <= _LINE_TOLERANCE:
                 boxes[-1] = (
                     last_page,
                     (min(lx0, x0), min(ltop, top), max(lx1, x1), max(lbottom, bottom)),
+                    (cs, local_end),
                 )
                 continue
-        boxes.append((span.page, (x0, top, x1, bottom)))
+        boxes.append((span.page, (x0, top, x1, bottom), (local_start, local_end)))
     return boxes
 
 
@@ -138,12 +160,20 @@ def chunk_spans(spans: list[Span], chunk_words: int = 300, overlap_words: int = 
             break
         end_index = start + len(window) - 1
         pages = [s.page for s in window]
+        # Local to this window, not the document: _merge_boxes' char
+        # ranges are offsets into `chunk.text` itself, the same frame a
+        # search hit's matched substring is found in.
+        window_starts: list[int] = []
+        cursor = 0
+        for s in window:
+            window_starts.append(cursor)
+            cursor += len(s.text) + 1
         chunks.append(
             Chunk(
                 text=spans_to_text(window),
                 page_start=min(pages),
                 page_end=max(pages),
-                boxes=_merge_boxes(window),
+                boxes=_merge_boxes(window, window_starts),
                 char_start=starts[start],
                 char_end=min(starts[end_index] + len(spans[end_index].text), full_length),
             )
