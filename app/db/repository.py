@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from uuid import uuid4
 
 from sqlalchemy import select, delete, or_, update
@@ -8,6 +9,8 @@ from app.core.config import settings
 from app.db.connection import get_sessionmaker
 from app.db.models import FileNode
 from app.storage import minio_client
+
+logger = logging.getLogger(__name__)
 
 
 def _node_dict(n: FileNode) -> dict:
@@ -151,7 +154,26 @@ async def create_file(
             minio_object_key=object_key,
         )
         session.add(node)
-        await session.commit()
+        try:
+            await session.commit()
+        except Exception:
+            # Saga compensation: undo the MinIO write this function already
+            # made. Without it, a commit failure here (a dropped connection,
+            # a constraint violation — _check_name_free already ruled out
+            # the expected one) leaves the blob sitting in MinIO with
+            # nothing in Postgres ever pointing to it — an orphan no code
+            # path revisits, since nothing references its key again.
+            try:
+                await asyncio.to_thread(minio_client.delete_object, object_key)
+            except Exception:
+                # The compensation itself failing is a second, independent
+                # problem — log it rather than let it mask the commit error
+                # that's actually being raised below.
+                logger.warning(
+                    "Saga compensation failed: could not delete orphaned MinIO object %s "
+                    "after a Postgres commit failure", object_key, exc_info=True,
+                )
+            raise
         await session.refresh(node)
         return _node_dict(node)
 
@@ -270,6 +292,26 @@ async def _collect_descendants(session: AsyncSession, node_id: str) -> list[File
 
 
 async def delete_node(user_id: str, node_id: str) -> None:
+    """Qdrant and MinIO are cleaned up *before* the Postgres row is touched,
+    not after — the reverse of the obvious order, and deliberately so.
+
+    The old order deleted the Postgres row first: if the MinIO or Qdrant
+    cleanup that followed then failed partway (nothing here was wrapped in a
+    try/except, so one failing key aborted the rest), the file had already
+    vanished from the tree while its chunks stayed fully intact and
+    searchable in Qdrant — a citation pointing at a file_id Postgres no
+    longer had any record of. Silent, and nothing would ever revisit it to
+    clean it up or even notice.
+
+    Doing the destructive-but-reversible steps first means a failure there
+    leaves the Postgres row exactly as it was — the file is still in the
+    tree, visibly undeleted, and the caller can just retry. Both cleanup
+    calls are idempotent (MinIO: deleting an already-gone key is a no-op,
+    verified live; Qdrant: a filter-delete matching zero points is a no-op
+    too), so retrying after a partial failure is always safe — nothing here
+    needs an explicit saga-style compensating action, because nothing
+    partially done ever needs to be undone, only finished.
+    """
     async with get_sessionmaker()() as session:
         result = await session.execute(
             select(FileNode).where(FileNode.id == node_id, FileNode.user_id == user_id)
@@ -286,12 +328,6 @@ async def delete_node(user_id: str, node_id: str) -> None:
         if node.type == "file":
             file_ids.append(node.id)
 
-        await session.execute(delete(FileNode).where(FileNode.id == node_id))
-        await session.commit()
-
-    for key in object_keys:
-        await asyncio.to_thread(minio_client.delete_object, key)
-
     if settings.EMBEDDING_API_KEY:
         # Local import: keeps a hard Qdrant dependency out of this function
         # for deployments with no embedding key — nothing was ever embedded,
@@ -300,6 +336,13 @@ async def delete_node(user_id: str, node_id: str) -> None:
 
         for file_id in file_ids:
             await asyncio.to_thread(vector_store.delete_by_file_id, file_id)
+
+    for key in object_keys:
+        await asyncio.to_thread(minio_client.delete_object, key)
+
+    async with get_sessionmaker()() as session:
+        await session.execute(delete(FileNode).where(FileNode.id == node_id))
+        await session.commit()
 
 
 async def search_grep(user_id: str, query: str, path: str = "/", limit: int = 50) -> list[dict]:
