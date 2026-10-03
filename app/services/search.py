@@ -1,4 +1,5 @@
-"""Semantic search over a user's files (the search_files agent tool).
+"""Search over a user's files — two ways in, one index (the search_files
+agent tool's `exact` argument picks between them).
 
 Lives outside the repository module because it touches the embedding API
 and Qdrant rather than Postgres. Results carry the page and boxes the
@@ -17,3 +18,9 @@ async def search_vector(user_id: str, query: str, top_k: int = 5) -> list[dict]:
         raise ValueError("Semantic search is not configured (EMBEDDING_API_KEY missing)")
     vectors = await asyncio.to_thread(embed, [query])
     return await asyncio.to_thread(vector_store.search, user_id, vectors[0], top_k)
+
+
+async def search_fulltext(user_id: str, query: str, top_k: int = 5, phrase: bool = True) -> list[dict]:
+    """Exact-match search — no embedding call, so no EMBEDDING_API_KEY
+    dependency; works even when semantic search is unconfigured."""
+    return await asyncio.to_thread(vector_store.search_fulltext, user_id, query, top_k, phrase)

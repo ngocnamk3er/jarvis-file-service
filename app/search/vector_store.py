@@ -17,13 +17,39 @@ _VECTOR_SIZE = settings.EMBEDDING_DIMENSIONS or 1024
 
 _client: QdrantClient | None = None
 
+# Full-text index on the same field semantic search already reads —
+# keyword search is a second way to query the exact points vector search
+# uses, not a second store, so every hit carries the same page/boxes/char
+# offsets with no extra plumbing. Settings here matter and were each
+# verified live before being hard-coded:
+#   ascii_folding  catches the common case of a Vietnamese query typed
+#                  without diacritics (e.g. "nghi phep") against text
+#                  stored with them ("nghỉ phép") — confirmed live, off by
+#                  default.
+#   phrase_matching lets MatchPhrase require the query's words adjacent
+#                  and in order; default is False, and without it
+#                  MatchPhrase silently returns zero hits for every
+#                  query — not an error, just nothing, which is the kind
+#                  of failure that looks like "no results" rather than
+#                  "misconfigured".
+_CHUNK_TEXT_INDEX = qm.TextIndexParams(
+    type=qm.TextIndexType.TEXT,
+    tokenizer=qm.TokenizerType.WORD,
+    min_token_len=2,
+    lowercase=True,
+    ascii_folding=True,
+    phrase_matching=True,
+)
+
 
 def _get_client() -> QdrantClient:
-    """Returns a client with the collection guaranteed to exist. The
-    existence check runs every call (one cheap request) rather than once at
-    first init — otherwise a collection dropped out from under a
-    long-running process (Qdrant restart with lost volume, manual ops)
-    would make every subsequent upsert/search fail until a redeploy."""
+    """Returns a client with the collection and its full-text index
+    guaranteed to exist. Both checks run every call (cheap requests)
+    rather than once at first init — otherwise a collection dropped out
+    from under a long-running process (Qdrant restart with lost volume,
+    manual ops) would make every subsequent upsert/search fail until a
+    redeploy, and the same for an index dropped or never created because
+    this code shipped after the collection already existed."""
     global _client
     if _client is None:
         _client = QdrantClient(url=settings.QDRANT_URL)
@@ -31,6 +57,10 @@ def _get_client() -> QdrantClient:
         _client.create_collection(
             collection_name=_COLLECTION,
             vectors_config=qm.VectorParams(size=_VECTOR_SIZE, distance=qm.Distance.COSINE),
+        )
+    if "chunk_text" not in _client.get_collection(_COLLECTION).payload_schema:
+        _client.create_payload_index(
+            _COLLECTION, field_name="chunk_text", field_schema=_CHUNK_TEXT_INDEX
         )
     return _client
 
@@ -85,6 +115,26 @@ def delete_by_file_id(file_id: str) -> None:
     )
 
 
+def _hit(payload: dict, score: float) -> dict:
+    """One search result, whichever of the two query paths below found it.
+
+    .get, not [], on the citation fields: points upserted before they
+    existed have no such keys, and a stale point should degrade to "no
+    coordinates" rather than break the whole search.
+    """
+    return {
+        "file_id": payload["file_id"],
+        "path": payload["path"],
+        "chunk_text": payload["chunk_text"],
+        "score": score,
+        "page_start": payload.get("page_start", 0),
+        "page_end": payload.get("page_end", 0),
+        "boxes": payload.get("boxes", []),
+        "char_start": payload.get("char_start", 0),
+        "char_end": payload.get("char_end", 0),
+    }
+
+
 def search(user_id: str, query_vector: list[float], top_k: int) -> list[dict]:
     # QdrantClient.search() was removed in qdrant-client 1.1x — query_points()
     # is the current API (verified live against 1.19.0).
@@ -94,20 +144,38 @@ def search(user_id: str, query_vector: list[float], top_k: int) -> list[dict]:
         query_filter=qm.Filter(must=[qm.FieldCondition(key="user_id", match=qm.MatchValue(value=user_id))]),
         limit=top_k,
     )
-    return [
-        {
-            "file_id": h.payload["file_id"],
-            "path": h.payload["path"],
-            "chunk_text": h.payload["chunk_text"],
-            "score": h.score,
-            # .get, not [] — points indexed before this existed have no
-            # such keys, and a stale point should degrade to "no
-            # coordinates" rather than break the whole search.
-            "page_start": h.payload.get("page_start", 0),
-            "page_end": h.payload.get("page_end", 0),
-            "boxes": h.payload.get("boxes", []),
-            "char_start": h.payload.get("char_start", 0),
-            "char_end": h.payload.get("char_end", 0),
-        }
-        for h in response.points
-    ]
+    return [_hit(h.payload, h.score) for h in response.points]
+
+
+def search_fulltext(user_id: str, query: str, top_k: int, phrase: bool = True) -> list[dict]:
+    """Keyword search over the same chunk_text field semantic search
+    queries, against the same points — so a hit here carries the same
+    page/boxes/char offsets, no separate index to keep in sync.
+
+    phrase=True (default) requires the query's words adjacent and in
+    that order (MatchPhrase) — right for an exact code, a name, a quoted
+    sentence. phrase=False only requires every word present somewhere in
+    the chunk, any order (MatchText) — wider net, for when the caller
+    has the right words but not the right order or isn't sure they're
+    adjacent.
+
+    No relevance score of its own: a phrase/text condition is a boolean
+    filter, not a ranked query. Every hit gets score=1.0 rather than a
+    number that would imply degrees of match that were never computed —
+    order here is Qdrant's scroll order (insertion order), not
+    relevance.
+    """
+    condition = qm.MatchPhrase(phrase=query) if phrase else qm.MatchText(text=query)
+    points, _ = _get_client().scroll(
+        collection_name=_COLLECTION,
+        scroll_filter=qm.Filter(
+            must=[
+                qm.FieldCondition(key="user_id", match=qm.MatchValue(value=user_id)),
+                qm.FieldCondition(key="chunk_text", match=condition),
+            ]
+        ),
+        limit=top_k,
+        with_payload=True,
+        with_vectors=False,
+    )
+    return [_hit(p.payload, 1.0) for p in points]

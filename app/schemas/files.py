@@ -46,6 +46,16 @@ class VectorSearchRequest(BaseModel):
     top_k: int = 5
 
 
+class FullTextSearchRequest(BaseModel):
+    user_id: str
+    query: str
+    top_k: int = 5
+    # True: query's words adjacent, in order (an exact code, a name).
+    # False: every word present somewhere in the chunk, any order (the
+    # right words, uncertain phrasing).
+    phrase: bool = True
+
+
 class RerankRequest(BaseModel):
     query: str
     documents: list[str]

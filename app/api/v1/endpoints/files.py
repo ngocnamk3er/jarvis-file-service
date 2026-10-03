@@ -10,6 +10,7 @@ from app.schemas.files import (
     FileNodeOut,
     FileSearchResult,
     FolderCreate,
+    FullTextSearchRequest,
     NodeDetail,
     NodeUpdate,
     VectorSearchRequest,
@@ -102,9 +103,12 @@ async def delete_node(node_id: str, user_id: str):
 
 @router.get("/search/grep", response_model=list[FileSearchResult])
 async def grep_files(user_id: str, query: str, path: str = "/"):
-    """Plain keyword search over name + extracted content — the
-    grep_files agent tool. See POST /search/vector (phase 3) for the
-    semantic half of hybrid search."""
+    """ILIKE over name + extracted content — the pre-2026-10 keyword half
+    of hybrid search, now superseded by POST /search/fulltext (which
+    reuses the semantic index's own points, so a hit carries page/boxes
+    for free, and isn't a Postgres full-table scan). No agent tool has
+    called this since grep_files was removed 2026-09-27; left running in
+    case something still depends on it directly."""
     try:
         return await repository.search_grep(user_id, query, path)
     except ValueError as e:
@@ -125,12 +129,25 @@ async def reindex(user_id: str | None = None):
 
 @router.post("/search/vector", response_model=list[VectorSearchResult])
 async def search_vector(body: VectorSearchRequest):
-    """Semantic search over embedded chunks — the search_files agent tool.
-    See GET /search/grep for the keyword half of hybrid search."""
+    """Semantic search over embedded chunks — the search_files agent
+    tool's default mode. See POST /search/fulltext for the exact-match
+    half of hybrid search, same tool's `exact=True`."""
     try:
         return await search_service.search_vector(body.user_id, body.query, body.top_k)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/search/fulltext", response_model=list[VectorSearchResult])
+async def search_fulltext(body: FullTextSearchRequest):
+    """Exact-match search over the same embedded chunks POST /search/vector
+    queries — the search_files agent tool's `exact=True`. Returns the
+    same VectorSearchResult shape (page/boxes/char offsets included),
+    since a hit here is a point the semantic index already has, found by
+    a different filter instead of a different store. See
+    services/search.py and search/vector_store.py's search_fulltext for
+    what `phrase` changes."""
+    return await search_service.search_fulltext(body.user_id, body.query, body.top_k, body.phrase)
 
 
 @router.post("/search/rerank", response_model=list[RerankResult])
