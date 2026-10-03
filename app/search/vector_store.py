@@ -187,16 +187,40 @@ def _find_match(text: str, query: str) -> tuple[int, int] | None:
     entirely. Folding first lets the whole phrase match directly where
     it belongs, so that wrong-word fallback never triggers.
 
-    Tries the whole phrase first, then the first individual word — a
-    non-phrase (any-order) match can have its words scattered wider than
-    one contiguous span covers. Returns None, not a guess, when nothing
-    folds into a match anywhere.
+    Tries the whole phrase, then 2-word windows, then single words — in
+    that order, not single words straight after the full phrase. Most
+    Vietnamese words are written as two or more space-separated
+    syllables ("chính sách", "ngân sách", "nghỉ phép") that mean nothing
+    on their own and collide constantly: hunting a hybrid-search query
+    containing "chính sách" (policy) for "ngân sách" (budget)'s text,
+    this fell back to the single syllable "sách" and highlighted it
+    alone — technically a substring match, meaningless as a result —
+    confirmed live 2026-10-04. A 2-word window tried first finds the
+    actual compound word (or an English multi-word term like "retry
+    after") before ever risking a bare, ambiguous syllable; a query
+    that's genuinely one token (an ID, a single English word) has no
+    2-word window to try and falls straight through to the single-word
+    tier unchanged.
+
+    A non-phrase (any-order) match can still have its words scattered
+    wider than one contiguous span covers, which is what the single-word
+    tier remains for — picking the *longest* word that matches, not the
+    first in query order: a longer word is far less likely to be a
+    coincidental collision than a short, common syllable sitting earlier
+    in the sentence. Returns None, not a guess, when nothing folds into
+    a match anywhere.
     """
     folded_text, folded_query = _fold(text).lower(), _fold(query).lower()
     idx = folded_text.find(folded_query)
     if idx != -1:
         return idx, idx + len(folded_query)
-    for word in folded_query.split():
+    words = folded_query.split()
+    for i in range(len(words) - 1):
+        phrase = " ".join(words[i : i + 2])
+        idx = folded_text.find(phrase)
+        if idx != -1:
+            return idx, idx + len(phrase)
+    for word in sorted(words, key=len, reverse=True):
         idx = folded_text.find(word)
         if idx != -1:
             return idx, idx + len(word)
