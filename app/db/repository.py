@@ -2,7 +2,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from sqlalchemy import select, delete, or_, update
+from sqlalchemy import select, delete, or_, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -23,6 +23,9 @@ def _node_dict(n: FileNode) -> dict:
         "mime_type": n.mime_type,
         "size_bytes": n.size_bytes,
         "indexing_status": n.indexing_status,
+        "error_stage": n.error_stage,
+        "error_message": n.error_message,
+        "attempt_count": n.attempt_count,
         "created_at": n.created_at,
         "updated_at": n.updated_at,
     }
@@ -176,25 +179,6 @@ async def create_file(
             raise
         await session.refresh(node)
         return _node_dict(node)
-
-
-async def get_file_for_ingest(node_id: str) -> dict | None:
-    """Internal-only accessor for services/ingest.py — unlike get_node(),
-    this exposes minio_object_key (never part of the public API shape) and
-    skips the user_id filter since the caller (upload_file's own background
-    task) already knows it created this exact row."""
-    async with get_sessionmaker()() as session:
-        result = await session.execute(select(FileNode).where(FileNode.id == node_id))
-        node = result.scalar_one_or_none()
-        if node is None:
-            return None
-        return {
-            "name": node.name,
-            "type": node.type,
-            "mime_type": node.mime_type,
-            "minio_object_key": node.minio_object_key,
-            "user_id": node.user_id,
-        }
 
 
 async def get_content_ref(user_id: str, node_id: str) -> dict | None:
@@ -395,11 +379,36 @@ async def list_file_ids(user_id: str | None = None) -> list[str]:
 
 async def set_indexing_status(node_id: str, status: str) -> None:
     async with get_sessionmaker()() as session:
-        await session.execute(update(FileNode).where(FileNode.id == node_id).values(indexing_status=status))
+        await session.execute(
+            update(FileNode)
+            .where(FileNode.id == node_id)
+            .values(indexing_status=status, stage_started_at=func.now())
+        )
         await session.commit()
 
 
 async def set_extracted_text(node_id: str, text: str) -> None:
     async with get_sessionmaker()() as session:
         await session.execute(update(FileNode).where(FileNode.id == node_id).values(extracted_text=text))
+        await session.commit()
+
+
+async def reset_for_reindex(node_id: str) -> None:
+    """Puts a file back at the front of the pipeline — POST /files/reindex
+    publishes a fresh message for it right after this, same as a brand new
+    upload. Clears the previous run's error/attempt state so a row that
+    failed last time doesn't start its new attempts already at the DLQ
+    threshold."""
+    async with get_sessionmaker()() as session:
+        await session.execute(
+            update(FileNode)
+            .where(FileNode.id == node_id)
+            .values(
+                indexing_status="pending",
+                attempt_count=0,
+                error_stage=None,
+                error_message=None,
+                stage_started_at=func.now(),
+            )
+        )
         await session.commit()

@@ -1,9 +1,10 @@
 import asyncio
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 
 from app.api.deps import verify_internal_key
 from app.db import repository
+from app.queue import publisher
 from app.schemas.files import (
     RerankRequest,
     RerankResult,
@@ -16,7 +17,7 @@ from app.schemas.files import (
     VectorSearchRequest,
     VectorSearchResult,
 )
-from app.services import ingest, rerank as rerank_service, search as search_service
+from app.services import rerank as rerank_service, search as search_service
 from app.storage import minio_client
 
 router = APIRouter(dependencies=[Depends(verify_internal_key)])
@@ -40,7 +41,6 @@ async def list_tree(user_id: str, path: str = "/"):
 
 @router.post("/files", response_model=FileNodeOut)
 async def upload_file(
-    background_tasks: BackgroundTasks,
     user_id: str = Form(...),
     parent_path: str = Form("/"),
     file: UploadFile = File(...),
@@ -50,9 +50,11 @@ async def upload_file(
         node = await repository.create_file(user_id, parent_path, file.filename, content, file.content_type)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    # Returns immediately ("pending"); extraction runs after the response is
-    # sent — see services/ingest.py.
-    background_tasks.add_task(ingest.process_file, node["id"])
+    # Returns immediately ("pending") — jarvis-ocr-worker picks this up off
+    # RabbitMQ (see app/queue/) and does extraction/chunking/embedding/
+    # indexing out of process, reporting its progress back onto this same
+    # row's indexing_status.
+    await asyncio.to_thread(publisher.publish_ingest_task, node["id"])
     return node
 
 
@@ -117,13 +119,17 @@ async def grep_files(user_id: str, query: str, path: str = "/"):
 
 @router.post("/reindex")
 async def reindex(user_id: str | None = None):
-    """Re-run the ingest pipeline (extract → embed → Qdrant) over existing
-    files — for after an embedding-model change or to recover failed rows.
-    Internal/admin only; synchronous since this deployment's file count is
-    small. Omit user_id to reindex everyone's."""
+    """Re-run the ingest pipeline (extract → chunk → embed → index) over
+    existing files — for after an embedding-model change or to recover
+    failed rows. Internal/admin only. Fire-and-forget: each file is reset
+    to "pending" and a fresh message published for jarvis-ocr-worker to
+    pick up, same as a brand new upload — this returns as soon as every
+    message is queued, not once they're all processed. Omit user_id to
+    reindex everyone's."""
     ids = await repository.list_file_ids(user_id)
     for node_id in ids:
-        await ingest.process_file(node_id)
+        await repository.reset_for_reindex(node_id)
+        await asyncio.to_thread(publisher.publish_ingest_task, node_id)
     return {"reindexed": len(ids)}
 
 

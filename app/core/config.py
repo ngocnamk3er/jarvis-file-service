@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     RERANK_BASE_URL: str = "https://openrouter.ai/api/v1"
     RERANK_MODEL: str = "qwen/qwen3-reranker-8b"
 
+    # The ingestion queue jarvis-ocr-worker consumes from — see
+    # app/queue/topology.py and that service's own queue/consumer.py for the
+    # exchange/queue/DLX shape. Host/port are non-secret (configmap);
+    # user/password come from jarvis-secrets, same split as MINIO_*.
+    RABBITMQ_HOST: str = "localhost"
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_USER: str = "jarvis"
+    RABBITMQ_PASSWORD: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = True

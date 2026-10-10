@@ -11,6 +11,9 @@ class FileNodeOut(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     indexing_status: str
+    error_stage: str | None = None
+    error_message: str | None = None
+    attempt_count: int = 0
     created_at: datetime
     updated_at: datetime
 

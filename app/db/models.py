@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Text, DateTime, ForeignKey, BigInteger, func, UniqueConstraint, CheckConstraint
+from sqlalchemy import Text, DateTime, ForeignKey, BigInteger, Integer, func, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -34,9 +34,26 @@ class FileNode(Base):
     # directly and is the chunking source for embeddings (phase 3). NULL
     # until ingestion runs, or forever for unsupported/binary types.
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # pending|extracting|embedding|done|failed|skipped — see repository.py.
-    # Everything is "pending" until phase 2's ingestion pipeline lands.
+    # pending|extracting|chunking|embedding|indexing|done|failed|skipped —
+    # see repository.py and app/queue/consumer.py (jarvis-ocr-worker) for
+    # the transitions. Everything is "pending" until the worker picks it up.
     indexing_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    # Which status was active when this row last failed — NULL unless
+    # indexing_status="failed". Lets an operator tell "died during OCR"
+    # from "died calling the embedding API" without re-running anything.
+    error_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The actual exception text (truncated by the writer), discarded
+    # entirely before this column existed — a bare `except Exception` just
+    # flipped the status and threw the reason away.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Bumped by the worker on each retryable failure; attempt_count >= the
+    # queue's MAX_ATTEMPTS is what routes a message to the dead-letter
+    # queue instead of retrying again. Lives here, not in an AMQP header,
+    # so there's one source of truth, inspectable with a plain SELECT.
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Set every time indexing_status changes — a row whose stage hasn't
+    # moved in an implausibly long time is a stuck job, not a slow one.
+    stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -53,4 +70,9 @@ class FileNode(Base):
         # a caller ever bypasses the repository.
         UniqueConstraint("user_id", "parent_id", "name", name="uq_file_nodes_user_parent_name"),
         CheckConstraint("type IN ('folder', 'file')", name="ck_file_nodes_type"),
+        CheckConstraint(
+            "indexing_status IN ('pending','extracting','chunking','embedding','indexing',"
+            "'done','failed','skipped')",
+            name="ck_file_nodes_indexing_status",
+        ),
     )

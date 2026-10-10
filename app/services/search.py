@@ -3,8 +3,10 @@ agent tool's `exact` argument picks between them).
 
 Lives outside the repository module because it touches the embedding API
 and Qdrant rather than Postgres. Results carry the page and boxes the
-chunk came from when the source format had them — see services/layout.py
-for how those are derived and why they are stored as fractions."""
+chunk came from when the source format had them — see jarvis-ocr-worker's
+services/layout.py for how those are derived and why they are stored as
+fractions (extraction/chunking moved there; this service only reads the
+Qdrant points they wrote)."""
 
 import asyncio
 
