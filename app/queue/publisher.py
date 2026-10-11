@@ -28,7 +28,7 @@ def publish_ingest_task(file_id: str) -> None:
         topology.declare_topology(channel)
         channel.basic_publish(
             exchange="",
-            routing_key=topology.MAIN_QUEUE,
+            routing_key=topology.INGEST_QUEUE,
             body=json.dumps({"file_id": file_id}),
             properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
