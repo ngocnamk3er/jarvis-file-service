@@ -20,7 +20,7 @@ def publish_ingest_task(file_id: str) -> None:
     credentials = pika.PlainCredentials(settings.RABBITMQ_USER, settings.RABBITMQ_PASSWORD)
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(
-            host=settings.RABBITMQ_HOST, port=settings.RABBITMQ_PORT, credentials=credentials,
+            host=settings.RABBITMQ_HOST, port=settings.RABBITMQ_AMQP_PORT, credentials=credentials,
         )
     )
     try:

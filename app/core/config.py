@@ -81,7 +81,14 @@ class Settings(BaseSettings):
     # exchange/queue/DLX shape. Host/port are non-secret (configmap);
     # user/password come from jarvis-secrets, same split as MINIO_*.
     RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_PORT: int = 5672
+    # Not RABBITMQ_PORT: Kubernetes auto-injects that exact name into every
+    # pod in the namespace once a Service literally named "rabbitmq"
+    # exists (its legacy service-links mechanism, e.g.
+    # RABBITMQ_PORT=tcp://10.x.x.x:5672) — confirmed live, it silently
+    # overrides this field's intended default and pydantic then fails to
+    # parse that URL as an int. RABBITMQ_HOST has no such collision
+    # (Kubernetes' own var is RABBITMQ_SERVICE_HOST, a different name).
+    RABBITMQ_AMQP_PORT: int = 5672
     RABBITMQ_USER: str = "jarvis"
     RABBITMQ_PASSWORD: str = ""
 
